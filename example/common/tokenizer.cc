@@ -78,6 +78,22 @@ Tokenizer::Tokenizer(const std::string &filepath) {
     | magic(4B) | version(4B) | vocab_size(4B) | reserved(1012B) | token词表数据       |
     ----------------------------------------------------------------------------------
     ===================================== 作业 ===================================== */
+    std::ifstream ifs(filepath, std::ios::binary);
+
+    auto header = ReadSeveralBytesFromIfstream(1024, &ifs);
+    magic_number_ = BytesToType<uint32_t>(header, 0);
+    auto version = BytesToType<uint32_t>(header, 0);
+    vocab_size_ = BytesToType<uint32_t>(header, 8);
+
+    eot_token_ = kEotMap.at(magic_number_);
+
+    token_table_.resize(vocab_size_);
+    for (uint32_t i = 0; i < vocab_size_; i++) {
+        auto len_bytes = ReadSeveralBytesFromIfstream(1, &ifs);
+        uint8_t len = len_bytes[0];
+        auto str_bytes = ReadSeveralBytesFromIfstream(len, &ifs);
+        token_table_[i] = std::string(str_bytes.begin(), str_bytes.end());
+    }
 }
 
 std::string Tokenizer::Decode(uint32_t token_id) const {
@@ -85,7 +101,7 @@ std::string Tokenizer::Decode(uint32_t token_id) const {
     TODO：实现token_id到文本的转换
     功能描述：根据token_id返回对应的文本片段
     ===================================== 作业 ===================================== */
-    return "";
+    return token_table_[token_id];
 }
 
 void Tokenizer::GenerateText(infini_train::nn::Module &model, uint32_t batch_size, uint32_t sequence_length,
@@ -104,13 +120,27 @@ void Tokenizer::GenerateText(infini_train::nn::Module &model, uint32_t batch_siz
     std::cout << "The meaning of life is";
 
     auto x = std::make_shared<infini_train::Tensor>(x_tensor.To(device));
-    uint64_t kRngState = kRngState;
+    uint64_t rng_state = kRngState;
     LOG(INFO) << "start generate text:";
     for (int t = prompt_len; t < text_length; t++) {
         /* ===================================== 作业 =====================================
         TODO：实现单步文本生成逻辑
         HINT：调用model.Forward推理获取logits，根据推理结果进行随机采样，调用Decode获取文本结果
         ===================================== 作业 ===================================== */
+        auto logits = model.Forward({x})[0];
+        auto slice = logits->Slice(1, t - 1, t); 
+        auto probs = nn::function::Softmax(slice, -1);
+
+        auto probs_cpu = probs->To(Device(DeviceType::kCPU, 0));
+        float *probs_data = static_cast<float *>(probs_cpu.DataPtr());
+
+        float coin = RandomF32(rng_state);
+        int next_token = SampleMult(probs_data, vocab_size_, coin);
+
+        std::cout << Decode(next_token);
+
+        x_buff[t] = next_token;
+        x = std::make_shared<infini_train::Tensor>(x_tensor.To(device));
     }
     std::cout << std::endl;
 }

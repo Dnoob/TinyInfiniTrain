@@ -1,5 +1,6 @@
 #include <cstdint>
 #include <fcntl.h>
+#include <functional>
 #include <memory>
 #include <numeric>
 #include <tuple>
@@ -15,8 +16,35 @@ std::shared_ptr<Tensor> MatmulForward(const std::shared_ptr<Tensor> &input, cons
     // TODO：实现CPU上的矩阵乘法前向计算
     // REF:
     // =================================== 作业 ===================================
+    const auto &input_dims = input->Dims();
+    const auto &other_dims = other->Dims();
+    CHECK_GE(input_dims.size(), 2);
+    CHECK_EQ(input_dims.size(), other_dims.size());
 
-    auto output = std::make_shared<Tensor>();
+    const int64_t M = *(input_dims.rbegin() + 1);
+    const int64_t K = *input_dims.rbegin();
+    const int64_t N = *other_dims.rbegin();
+    CHECK_EQ(K, *(other_dims.rbegin() + 1));
+
+    auto output_dims = input_dims;
+    *output_dims.rbegin() = N;
+    auto output = std::make_shared<Tensor>(output_dims, DataType::kFLOAT32);
+
+    if (input_dims.size() == 2) {
+        output->EigenMatrix() = input->EigenMatrix() * other->EigenMatrix();
+    } else {
+        const int64_t batch = std::accumulate(input_dims.begin(), input_dims.end() - 2, 1L, std::multiplies<int64_t>{});
+        auto *in_ptr = static_cast<float *>(input->DataPtr());
+        auto *ot_ptr = static_cast<float *>(other->DataPtr());
+        auto *ou_ptr = static_cast<float *>(output->DataPtr());
+        for (int64_t b = 0; b < batch; b++) {
+            Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> a(in_ptr + b * M * K, M, K);
+            Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> c(ot_ptr + b * K * N, K, N);
+            Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> o(ou_ptr + b * M * N, M, N);
+            o = a * c;
+        }
+    }
+
     return {output};
 }
 
@@ -27,9 +55,41 @@ MatmulBackward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tenso
     // TODO：实现CPU上的矩阵乘法反向传播
     // REF:
     // =================================== 作业 ===================================
+    
+    const auto &input_dims = input->Dims();
+    const auto &other_dims = other->Dims();
 
-    auto grad_input = std::make_shared<Tensor>();
-    auto grad_other = std::make_shared<Tensor>();
+    auto grad_input = std::make_shared<Tensor>(input_dims, DataType::kFLOAT32);
+    auto grad_other = std::make_shared<Tensor>(other_dims, DataType::kFLOAT32);
+
+    if (input_dims.size() == 2) {
+        // grad_input = grad_output * other^T
+        grad_input->EigenMatrix() = grad_output->EigenMatrix() * other->EigenMatrix().transpose();
+        // grad_other = input^T * grad_output
+        grad_other->EigenMatrix() = input->EigenMatrix().transpose() * grad_output->EigenMatrix();
+    } else {
+        const int64_t M = *(input_dims.rbegin() + 1);
+        const int64_t K = *input_dims.rbegin();
+        const int64_t N = *other_dims.rbegin();
+        const int64_t batch = std::accumulate(input_dims.begin(), input_dims.end() - 2, 1L, std::multiplies<int64_t>{});
+
+        auto *in_ptr = static_cast<float *>(input->DataPtr());
+        auto *ot_ptr = static_cast<float *>(other->DataPtr());
+        auto *go_ptr = static_cast<float *>(grad_output->DataPtr());
+        auto *gi_ptr = static_cast<float *>(grad_input->DataPtr());
+        auto *gw_ptr = static_cast<float *>(grad_other->DataPtr());
+
+        for (int64_t b = 0; b < batch; b++) {
+            Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> in(in_ptr + b * M * K, M, K);
+            Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> ot(ot_ptr + b * K * N, K, N);
+            Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> go(go_ptr + b * M * N, M, N);
+            Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> gi(gi_ptr + b * M * K, M, K);
+            Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> gw(gw_ptr + b * K * N, K, N);
+            gi = go * ot.transpose();
+            gw = in.transpose() * go;
+        }
+    }
+
     return {grad_input, grad_other};
 }
 
